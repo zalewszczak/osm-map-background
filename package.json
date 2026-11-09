@@ -1,0 +1,81 @@
+{
+  "name": "osm-map-background",
+  "author": "zalew",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-plugin"
+  ],
+  "private": true,
+  "scripts": {
+    "build:plugin": "node tools/build-plugin.js",
+    "test": "node tools/test/run.js"
+  },
+  "dependencies": {},
+  "pebble": {
+    "displayName": "OSM Map Background",
+    "uuid": "f4d65bab-e9fd-4a40-aeb1-276b90d56786",
+    "sdkVersion": "3",
+    "projectType": "plugin",
+    "configPage": "src/config.html",
+    "usesPermissions": [
+      {
+        "name": "Location",
+        "reason": "To draw a map of where you are"
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "tile.openstreetmap.org",
+            "tile.opentopomap.org",
+            "a.tile-cyclosm.openstreetmap.fr"
+          ]
+        }
+      }
+    ],
+    "plugin": {
+      "description": "A north-up map of where you are (OpenStreetMap, OpenTopoMap or CyclOSM) as a watch-ready image for watchface backgrounds. One instance per preset: pick the style, width, tone and marker you want.",
+      "script": "src/plugin/index.js",
+      "sources": [
+        {
+          "category": "location",
+          "items": [
+            "map"
+          ],
+          "supportsMultiple": true,
+          "suggestedRefreshIntervalSec": 600,
+          "properties": {
+            "name": [
+              "shortText",
+              "longText"
+            ],
+            "style": [
+              "shortText",
+              "longText"
+            ],
+            "width_m": [
+              "shortText",
+              "longText",
+              "numericValue"
+            ],
+            "latitude": [
+              "numericValue"
+            ],
+            "longitude": [
+              "numericValue"
+            ],
+            "attribution": [
+              "longText"
+            ],
+            "updated": [
+              "timestamp"
+            ],
+            "image": [
+              "image"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

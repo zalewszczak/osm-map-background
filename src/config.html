@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>OSM Map Background</title>
+<style>
+  :root { --bg:#fff; --fg:#14161a; --muted:#667; --card:#f2f4f8; --line:#d5d9e2; --accent:#1d5fd1; --accent-fg:#fff; --warn:#a15c00; --warn-bg:#fff3d9; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1116; --fg:#e8eaee; --muted:#9aa3b2; --card:#181d26; --line:#2b3340; --accent:#5b9bff; --accent-fg:#06101f; --warn:#ffcc66; --warn-bg:#332600; --bad:#ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,Roboto,sans-serif; }
+  main { max-width:560px; margin:0 auto; }
+  h1 { font-size:1.35rem; margin:0 0 2px; }
+  h2 { font-size:.8rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:22px 0 8px; }
+  .sub { color:var(--muted); margin:0 0 14px; font-size:.9rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .banner { background:var(--warn-bg); color:var(--warn); border-radius:10px; padding:10px 12px; margin:0 0 12px; font-size:.9rem; }
+  .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  .row > label { flex:0 0 96px; }
+  select, input[type=text], input[type=number] { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; flex:1 1 180px; min-width:0; }
+  input[type=range] { flex:1 1 180px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:10px; padding:10px 14px; cursor:pointer; }
+  button.primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .actions { display:flex; gap:8px; margin-top:14px; }
+  .actions button { flex:1; }
+  .previews { display:flex; gap:12px; align-items:flex-start; }
+  .previews figure { margin:0; min-width:0; flex:0 0 calc(50% - 6px); }
+  .previews .info { flex:1 1 0; min-width:0; font-size:.82rem; color:var(--muted); }
+  .info b { color:var(--fg); font-size:.95rem; }
+  .info p { margin:0 0 6px; }
+  figcaption { font-size:.72rem; color:var(--muted); margin-top:4px; }
+  canvas { display:block; width:100%; max-width:100%; background:#ddd; border-radius:8px; image-rendering:pixelated; }
+  canvas.round { border-radius:50%; }
+  .status { margin:10px 0 0; font-size:.9rem; color:var(--muted); min-height:1.3em; }
+  .status.bad { color:var(--bad); }
+  details { margin-top:10px; }
+  summary { cursor:pointer; color:var(--muted); font-size:.9rem; }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:.74rem; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; max-height:260px; overflow:auto; }
+  .check { display:flex; gap:10px; align-items:flex-start; margin:10px 0; }
+  .check input { margin-top:4px; }
+  .check small, small.hint { display:block; color:var(--muted); }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  .tabs button { padding:7px 12px; border-radius:999px; }
+  .tabs button.sel { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>OSM Map Background</h1>
+  <p class="sub">Plugin source <code>location/map</code> &middot; <span id="ver">starting&hellip;</span></p>
+  <div id="banner" class="banner" hidden></div>
+
+  <h2>Preview</h2>
+  <div class="card">
+    <div class="previews">
+      <figure>
+        <canvas id="canvas" width="200" height="228"></canvas>
+        <figcaption>What a watchface receives</figcaption>
+      </figure>
+      <div class="info" id="info"><p>The map is drawn on the phone from OpenStreetMap-based tiles, north up, and reduced to 16 watch colours.</p></div>
+    </div>
+    <p id="attr" class="status" style="font-size:.74rem"></p>
+    <p id="status" class="status">Waiting for the plugin&hellip;</p>
+    <div class="actions">
+      <button id="draw" class="primary" disabled>Draw map</button>
+      <button id="fresh" disabled title="Ignore the picture cache (downloaded tiles are still reused for 7 days)">Redraw</button>
+    </div>
+    <details><summary>Diagnostics</summary><pre id="log">(nothing yet)</pre>
+      <div class="row"><button id="clear" disabled>Clear cached tiles and maps</button></div>
+    </details>
+  </div>
+
+  <h2>Map presets</h2>
+  <div class="card">
+    <p class="sub" style="margin-top:0">A watchface can offer each preset as a choice. Up to 4.</p>
+    <div class="tabs" id="tabs"></div>
+    <div class="row"><label for="name">Name</label><input type="text" id="name" maxlength="24"></div>
+    <div class="row"><label for="style">Style</label><select id="style"></select></div>
+    <div class="row"><label for="widthM">Map width</label><select id="widthM"></select></div>
+    <small class="hint" id="zoomHint"></small>
+    <div class="row"><label for="tone">Tone</label>
+      <select id="tone"><option value="normal">Normal</option><option value="dark">Dark (lightness inverted)</option></select></div>
+    <div class="row"><label for="brightness">Brightness <span id="brv">0</span></label>
+      <input type="range" id="brightness" min="-70" max="70" step="5" value="0"></div>
+    <div class="row"><label for="color">Colours</label>
+      <select id="color"><option value="color">Colour (best 16 of 64)</option><option value="gray">Grayscale (4 levels)</option></select></div>
+    <div class="row"><label for="dither">Dithering</label>
+      <select id="dither"><option value="off">Off (flat, crisp)</option><option value="light">Light</option><option value="full">Full</option></select></div>
+    <small class="hint">Maps are mostly flat colour, so Off or Light usually looks cleanest; Full suits shaded topo maps.</small>
+    <div class="row"><label for="marker">Marker</label>
+      <select id="marker"><option value="none">None</option><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select>
+      <select id="markerColor"><option value="red">Red</option><option value="orange">Orange</option><option value="blue">Blue</option><option value="green">Green</option><option value="magenta">Magenta</option><option value="black">Black</option></select></div>
+    <div class="actions"><button id="remove">Remove this preset</button></div>
+  </div>
+
+  <h2>Preview size</h2>
+  <div class="card">
+    <div class="row"><label for="preset">Preview as</label>
+      <select id="preset">
+        <option value="200x228">Pebble Time 2 (200&times;228)</option>
+        <option value="260x260" data-round="1">Pebble Round 2 (260&times;260)</option>
+        <option value="144x168">Pebble Time / Pebble 2 (144&times;168)</option>
+        <option value="180x180" data-round="1">Pebble Time Round (180&times;180)</option>
+        <option value="custom">Custom&hellip;</option>
+      </select></div>
+    <div class="row" id="customRow" hidden>
+      <input type="number" id="cw" min="1" max="260" value="200"> &times; <input type="number" id="ch" min="1" max="260" value="228">
+    </div>
+    <small class="hint">Only affects this preview. A watchface asks for its own size; the map covers the same ground width on every watch.</small>
+  </div>
+
+  <h2>Location</h2>
+  <div class="card">
+    <div class="row"><label for="locMode">Centre on</label>
+      <select id="locMode"><option value="phone">The phone's location</option><option value="fixed">Fixed coordinates</option></select></div>
+    <div class="row" id="fixedRow" hidden>
+      <input type="text" id="lat" inputmode="decimal" placeholder="Latitude, e.g. 48.2082"> <input type="text" id="lon" inputmode="decimal" placeholder="Longitude, e.g. 16.3738">
+    </div>
+    <div class="row" id="useRow" hidden><button id="useLast" disabled>Use the last drawn position</button></div>
+    <small class="hint">Fixed coordinates are handy for testing and need no location permission.</small>
+  </div>
+
+  <div class="actions" style="margin-top:18px"><button id="save" class="primary" disabled>Save settings</button></div>
+  <p class="sub" style="margin-top:14px;font-size:.78rem">Map data &copy; OpenStreetMap contributors. Tiles are cached for 7 days and only fetched for the map being drawn, as the OSM tile usage policy asks.</p>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var busy = false, ready = false, again = false, timer = null;
+  var presets = [], sel = 0, styles = [], defaultPreset = null, maxPresets = 4, lastPos = null, widths = [];
+
+  function setStatus(text, bad) { var s = $('status'); s.textContent = text; s.className = 'status' + (bad ? ' bad' : ''); }
+  function send(message) { return Pebble.sendMessage('plugin', message); }
+  function fmtW(m) { if (m < 1000) return m + ' m'; var k = Math.round(m / 100) / 10; return (k === Math.round(k) ? Math.round(k) : k.toFixed(1)) + ' km'; }
+  function size() {
+    var v = $('preset').value;
+    if (v === 'custom') return { w: Math.max(1, Math.min(260, +$('cw').value || 144)), h: Math.max(1, Math.min(260, +$('ch').value || 168)) };
+    var p = v.split('x'); return { w: +p[0], h: +p[1] };
+  }
+  function lock(on) {
+    busy = on;
+    ['draw', 'fresh', 'save', 'clear'].forEach(function (id) { $(id).disabled = on || !ready; });
+    $('useLast').disabled = !lastPos;
+  }
+  function showBanner(missing, extra) {
+    var parts = [];
+    if (missing && missing.length) parts.push('Switched off in this plugin’s permissions: ' + missing.join(', ') + '. Allow them in the Pebble app (plugin permissions), then draw again.');
+    if (extra) parts.push(extra);
+    $('banner').hidden = !parts.length; $('banner').textContent = parts.join(' ');
+  }
+
+  // ---- preset form
+  var fields = ['name', 'style', 'widthM', 'tone', 'brightness', 'color', 'dither', 'marker', 'markerColor'];
+  function readForm() {
+    var p = presets[sel];
+    fields.forEach(function (f) { p[f] = $(f).value; });
+    p.widthM = +p.widthM; p.brightness = +p.brightness;
+  }
+  function writeForm() {
+    var p = presets[sel];
+    fields.forEach(function (f) { $(f).value = p[f]; });
+    $('brv').textContent = p.brightness;
+    $('remove').disabled = presets.length < 2;
+    updateHint();
+  }
+  function renderTabs() {
+    var t = $('tabs'); t.textContent = '';
+    presets.forEach(function (p, i) {
+      var b = document.createElement('button'); b.textContent = p.name || ('Preset ' + (i + 1)); b.className = i === sel ? 'sel' : '';
+      b.onclick = function () { sel = i; renderTabs(); writeForm(); schedule(); }; t.appendChild(b);
+    });
+    if (presets.length < maxPresets) {
+      var a = document.createElement('button'); a.textContent = '+ Add'; a.onclick = addPreset; t.appendChild(a);
+    }
+  }
+  function addPreset() {
+    var used = presets.map(function (p) { return p.id; }), n = 1;
+    while (used.indexOf('p' + n) >= 0) n++;
+    var p = JSON.parse(JSON.stringify(presets[sel])); p.id = 'p' + n; p.name = (p.name + ' ' + (presets.length + 1)).slice(0, 24);
+    presets.push(p); sel = presets.length - 1; renderTabs(); writeForm(); schedule();
+  }
+  function updateHint() {
+    var s = styles.filter(function (x) { return x.id === $('style').value; })[0];
+    $('zoomHint').textContent = s ? 'Ground width of the picture’s full width. This style goes up to zoom ' + s.maxZoom + '; very small widths on a wide watch are enlarged beyond that.' : '';
+  }
+
+  // ---- canvas
+  function b64(s) { var bin = atob(s), out = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  function drawBitmap(bm) {
+    var c = $('canvas'), ctx = c.getContext('2d');
+    c.width = bm.width; c.height = bm.height; c.style.maxWidth = bm.width + 'px';
+    var px = b64(bm.pixels), pal = b64(bm.palette), stride = (bm.width + 1) >> 1, img = ctx.createImageData(bm.width, bm.height);
+    for (var y = 0; y < bm.height; y++) for (var x = 0; x < bm.width; x++) {
+      var byte = px[y * stride + (x >> 1)], i = (x & 1) ? (byte & 15) : (byte >> 4), g = pal[i] === undefined ? 0 : pal[i], o = (y * bm.width + x) * 4;
+      img.data[o] = ((g >> 4) & 3) * 85; img.data[o + 1] = ((g >> 2) & 3) * 85; img.data[o + 2] = (g & 3) * 85; img.data[o + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  function clearCanvas(w, h) { var c = $('canvas'); c.width = w; c.height = h; c.style.maxWidth = w + 'px'; c.getContext('2d').clearRect(0, 0, w, h); }
+
+  function fixedValue() {
+    if ($('locMode').value !== 'fixed') return null;
+    var lat = parseFloat($('lat').value.replace(',', '.')), lon = parseFloat($('lon').value.replace(',', '.'));
+    return (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) ? { lat: lat, lon: lon } : false;
+  }
+  function renderInfo(r) {
+    var i = r.info, el = $('info'), s = styles.filter(function (x) { return x.id === i.style; })[0];
+    el.textContent = '';
+    function line(html, strong) { var p = document.createElement('p'); if (strong) { var b = document.createElement('b'); b.textContent = html; p.appendChild(b); } else p.textContent = html; el.appendChild(p); }
+    line(s ? s.label : i.style, true);
+    line('≈ ' + fmtW(i.widthM) + ' across · zoom ' + i.zoom + (i.limited ? ' (style maximum, enlarged)' : ''));
+    line(i.fromCache ? 'Reused the drawn map (you have not moved much).' : 'Tiles: ' + i.tiles.total + ' (' + i.tiles.cached + ' cached, ' + i.tiles.fetched + ' downloaded' + (i.tiles.failed ? ', ' + i.tiles.failed + ' failed' : '') + ')');
+    line('Centre ' + i.lat.toFixed(4) + ', ' + i.lon.toFixed(4) + ' (' + i.source + ')');
+    line('Drawn in ' + i.ms + ' ms');
+  }
+
+  async function preview(fresh) {
+    if (!ready) return;
+    if (busy) { again = true; return; }
+    var fx = fixedValue();
+    if (fx === false) { setStatus('Enter a valid latitude and longitude, or switch back to the phone’s location.', true); return; }
+    lock(true); again = false;
+    var sz = size();
+    $('canvas').className = $('preset').selectedOptions[0] && $('preset').selectedOptions[0].dataset.round ? 'round' : '';
+    setStatus($('locMode').value === 'phone' ? 'Getting your location and drawing…' : 'Drawing…');
+    try {
+      var r = await send({ type: 'preview', preset: presets[sel], width: sz.w, height: sz.h, fixed: fx, fresh: !!fresh });
+      $('log').textContent = r.log && r.log.length ? r.log.join('\n') : '(no log)';
+      showBanner(r.missingPermissions);
+      if (r.position) { lastPos = r.position; }
+      if (r.error) { setStatus(r.error, true); clearCanvas(sz.w, sz.h); return; }
+      drawBitmap(r.image); renderInfo(r);
+      $('attr').textContent = r.attribution || '';
+      setStatus('Works. ' + (r.info.fromCache ? 'Shown from cache.' : 'Fresh map.'));
+    } catch (e) {
+      setStatus('Plugin error: ' + (e && e.message ? e.message : e), true);
+    } finally { lock(false); if (again) schedule(50); }
+  }
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(function () { preview(false); }, ms == null ? 700 : ms); }
+
+  async function save() {
+    if (busy) return;
+    var fx = fixedValue();
+    if (fx === false) { setStatus('Fix the coordinates first.', true); return; }
+    lock(true);
+    try {
+      var r = await send({ type: 'save', settings: { presets: presets, fixed: fx } });
+      if (r && r.ok) { presets = r.settings.presets; sel = Math.min(sel, presets.length - 1); renderTabs(); writeForm(); }
+      setStatus(r && r.ok ? 'Saved. Watchfaces will refresh with these settings.' : 'Save failed: ' + (r && r.error), !(r && r.ok));
+    } catch (e) { setStatus('Save failed: ' + e, true); } finally { lock(false); }
+  }
+
+  // ---- wiring
+  fields.forEach(function (f) {
+    $(f).addEventListener('input', function () {
+      readForm(); if (f === 'brightness') $('brv').textContent = $('brightness').value;
+      if (f === 'name') renderTabs(); if (f === 'style') updateHint();
+      if (f !== 'name') schedule();
+    });
+  });
+  $('remove').onclick = function () { if (presets.length < 2) return; presets.splice(sel, 1); sel = Math.max(0, sel - 1); renderTabs(); writeForm(); schedule(); };
+  $('draw').onclick = function () { preview(false); };
+  $('fresh').onclick = function () { preview(true); };
+  $('save').onclick = save;
+  $('preset').onchange = function () { $('customRow').hidden = $('preset').value !== 'custom'; schedule(100); };
+  $('cw').onchange = $('ch').onchange = function () { schedule(300); };
+  $('locMode').onchange = function () { var f = $('locMode').value === 'fixed'; $('fixedRow').hidden = !f; $('useRow').hidden = !f; schedule(100); };
+  $('lat').onchange = $('lon').onchange = function () { schedule(300); };
+  $('useLast').onclick = function () { if (lastPos) { $('lat').value = lastPos.lat.toFixed(5); $('lon').value = lastPos.lon.toFixed(5); schedule(100); } };
+  $('clear').onclick = async function () {
+    if (busy) return; lock(true);
+    try { await send({ type: 'clearCache' }); setStatus('Cache cleared.'); } catch (e) { setStatus('' + e, true); } finally { lock(false); }
+  };
+
+  Pebble.addEventListener('ready', async function (event) {
+    if (event && event.target && event.target !== 'plugin') return;
+    try {
+      var init = await send({ type: 'init' });
+      if (!init || init.error) throw new Error(init && init.error || 'no reply');
+      ready = true; styles = init.styles; widths = init.widths; maxPresets = init.maxPresets; defaultPreset = init.defaultPreset;
+      $('ver').textContent = 'v' + init.version;
+      $('style').textContent = ''; styles.forEach(function (s) { var o = document.createElement('option'); o.value = s.id; o.textContent = s.label; $('style').appendChild(o); });
+      $('widthM').textContent = ''; widths.forEach(function (w) { var o = document.createElement('option'); o.value = w; o.textContent = fmtW(w); $('widthM').appendChild(o); });
+      presets = init.settings.presets; sel = 0;
+      if (init.settings.fixed) { $('locMode').value = 'fixed'; $('lat').value = init.settings.fixed.lat; $('lon').value = init.settings.fixed.lon; $('fixedRow').hidden = false; $('useRow').hidden = false; }
+      renderTabs(); writeForm();
+      showBanner(init.missingPermissions, init.lastError ? 'Last background error: ' + init.lastError.message : '');
+      lock(false); preview(false);
+    } catch (e) { setStatus('Plugin did not answer: ' + (e && e.message ? e.message : e), true); }
+  });
+  setTimeout(function () { if (!ready) setStatus('Still waiting for the plugin to start… if this stays, the plugin script failed to load.', true); }, 6000);
+})();
+</script>
+</body>
+</html>
