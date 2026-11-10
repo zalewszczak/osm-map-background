@@ -21,11 +21,21 @@ const tilePng = (z, x, y, size = 256) => {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 };
 
+// Transparent overlay tile: opaque magenta vertical band (x 100..139), everything else transparent.
+const overlayPng = () => {
+  const size = 256, raw = Buffer.alloc((size * 4 + 1) * size);
+  for (let j = 0; j < size; j++) for (let i = 100; i < 140; i++) raw.set([255, 0, 255, 255], j * (size * 4 + 1) + 1 + i * 4);
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+};
+
 function makeHost(opts = {}) {
+  const clock = { t: Date.UTC(2026, 10, 10, 12, 0, 0) };
+  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(clock.t); } static now() { return clock.t; } }
   const store = {}; let handler, cfg; const reqs = [];
   const geo = { mode: 'ok', lat: opts.lat ?? 48.2082, lon: opts.lon ?? 16.3738 };
   const ctx = {
-    console: { log() {}, info() {}, warn() {}, error() {} }, atob, btoa, Date, Math, JSON, Uint8Array, Float32Array, Float64Array, Int32Array, ArrayBuffer, Promise, Error, String, Number, Array, Object, RegExp, Infinity, isFinite, parseInt, Map,
+    console: { log() {}, info() {}, warn() {}, error() {} }, atob, btoa, Date: FakeDate, Math, JSON, Uint8Array, Float32Array, Float64Array, Int32Array, ArrayBuffer, Promise, Error, String, Number, Array, Object, RegExp, Infinity, isFinite, parseInt, Map,
     localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
     navigator: { geolocation: { getCurrentPosition: (ok_, err) => {
       if (geo.mode === 'ok') ok_({ coords: { latitude: geo.lat, longitude: geo.lon } });
@@ -35,6 +45,12 @@ function makeHost(opts = {}) {
     fetch: async (url, init) => {
       reqs.push({ url, init });
       const m = /\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url);
+      if (url.includes('waymarkedtrails')) {
+        if (opts.overlay === '404') return { ok: false, status: 404, headers: { get: () => null } };
+        if (opts.overlay === '500') return { ok: false, status: 500, headers: { get: () => null } };
+        const ob = overlayPng();
+        return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => ob.buffer.slice(ob.byteOffset, ob.byteOffset + ob.byteLength) };
+      }
       const failing = opts.fail && opts.fail(url, reqs.length);
       if (!m || failing) return { ok: false, status: failing === 'throw' ? 500 : 404, headers: { get: () => null } };
       let b = tilePng(+m[1], +m[2], +m[3]);
@@ -43,7 +59,7 @@ function makeHost(opts = {}) {
     },
   };
   ctx.globalThis = ctx; vm.createContext(ctx); vm.runInContext(script, ctx, { filename: 'index.js' });
-  return { ctx, reqs, store, geo, source: (req) => new Promise(res => handler(req, { data: d => res({ data: d }), error: (c, m) => res({ error: c + ': ' + m }) })), config: (msg) => new Promise(res => cfg(msg, res)) };
+  return { ctx, reqs, store, geo, clock, source: (req) => new Promise(res => handler(req, { data: d => res({ data: d }), error: (c, m) => res({ error: c + ': ' + m }) })), config: (msg) => new Promise(res => cfg(msg, res)) };
 }
 
 function validBitmap(b, w, h) {
@@ -144,6 +160,71 @@ const save = (h, presets, fixed) => h.config({ type: 'save', settings: { presets
   ok(init.settings.presets.length === 1 && init.styles.length === 3 && Array.isArray(init.missingPermissions), 'config init');
   r = await h.source({ category: 'x', item: 'y' }); ok(/PLUGIN_UNAVAILABLE/.test(r.error), 'wrong source rejected');
   r = await h.config({ type: 'clearCache' }); ok(r.ok && Object.keys(h.store).filter(k => k.startsWith('osmmap.tile')).length === 0, 'clear cache');
+
+  // 13. Very wide maps.
+  for (const wm of [30000, 100000, 1000000]) {
+    h = makeHost({ lat: 48.2, lon: 16.4 });
+    await save(h, [preset({ widthM: wm })]);
+    const rr = await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } });
+    ok(rr.data && validBitmap(rr.data.instances[0].properties.image.image, 200, 228), `${wm} m wide map renders`);
+  }
+
+  // 14. Route overlay.
+  const hasMagenta = (b) => { const pal = [...Buffer.from(b.palette, 'base64')]; return pal.includes(bytesOf([255, 0, 255])); };
+  h = makeHost({ lat: 48.2, lon: 16.4 });
+  await save(h, [preset({ widthM: 1000, overlay: 'hiking', style: 'topo' })]);
+  let o1 = (await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } })).data.instances[0].properties;
+  ok(hasMagenta(o1.image.image), 'hiking overlay drawn over the base map');
+  ok(h.reqs.some(r => r.url.startsWith('https://tile.waymarkedtrails.org/hiking/')), 'overlay tiles come from waymarkedtrails hiking');
+  ok(/waymarkedtrails/.test(o1.attribution.longText.text), 'overlay attribution included');
+  h = makeHost({ lat: 48.2, lon: 16.4 });
+  await save(h, [preset({ widthM: 1000 })]);
+  o1 = (await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } })).data.instances[0].properties;
+  ok(!hasMagenta(o1.image.image) && !h.reqs.some(r => /waymarked/.test(r.url)), 'no overlay requests without overlay');
+  h = makeHost({ lat: 48.2, lon: 16.4, overlay: '404' });
+  await save(h, [preset({ widthM: 1000, overlay: 'hiking' })]);
+  o1 = (await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } })).data.instances[0].properties;
+  ok(o1.image && validBitmap(o1.image.image, 200, 228), 'tiles with no routes (404) still give a map');
+  h = makeHost({ lat: 48.2, lon: 16.4, overlay: '500' });
+  await save(h, [preset({ widthM: 1000, overlay: 'hiking' })]);
+  await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } });
+  const n500 = h.reqs.length; h.clock.t += 1000;
+  const o2 = (await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 200, h: 228 } })).data.instances[0].properties;
+  ok(o2.image && h.reqs.length > n500, 'overlay failure: map still shown, not cached as complete');
+
+  // 15. Automatic width.
+  const wOf = async (hh) => (await hh.source({ category: 'location', item: 'map', iconPixelSize: { w: 100, h: 100 }, properties: ['width_m'] })).data.instances[0].properties.width_m.numericValue.value;
+  h = makeHost({ lat: 10, lon: 10 });
+  await save(h, [preset({ widthM: 1000, autoWidth: true })]);
+  const widths = [await wOf(h)];
+  for (let n = 0; n < 7; n++) { h.clock.t += 5 * 60000; h.geo.lat += 0.01; widths.push(await wOf(h)); }
+  ok(widths[0] === 1000 && widths[1] === 1500 && widths[2] === 2000 && widths[3] === 3000, 'keeps widening while moving: ' + widths.join(','));
+  const top = widths[widths.length - 1];
+  ok(top >= 10000 && top <= 20000 && widths[6] === widths[7], 'widening settles when the map moves ~10% per update: ' + top);
+  const down = [];
+  for (let n = 0; n < 8; n++) { h.clock.t += 5 * 60000; down.push(await wOf(h)); }
+  ok(down[0] < top && down.every((v, i) => i === 0 || v <= down[i - 1]) && down[down.length - 1] === 1000, 'narrows step by step when standing still: ' + down.join(','));
+  // long gap resets at once
+  for (let n = 0; n < 4; n++) { h.clock.t += 5 * 60000; h.geo.lat += 0.01; await wOf(h); }
+  h.clock.t += 45 * 60000; h.geo.lat += 0.3;
+  ok(await wOf(h) === 1000, 'update after a long gap goes back to the preset width');
+  // two requests within seconds (two watchfaces) count once
+  h.clock.t += 5 * 60000; h.geo.lat += 0.01; const a1 = await wOf(h); h.clock.t += 2000; const a2 = await wOf(h);
+  ok(a1 === a2, 'near-simultaneous requests do not double-step');
+  // opt out
+  h = makeHost({ lat: 10, lon: 10 });
+  await save(h, [preset({ widthM: 1000, autoWidth: false })]);
+  await wOf(h); h.clock.t += 5 * 60000; h.geo.lat += 0.05;
+  ok(await wOf(h) === 1000, 'auto width off: stays at the chosen width');
+  // default is on
+  const ds = await makeHost().config({ type: 'init' });
+  ok(ds.settings.presets[0].autoWidth === true, 'automatic width on by default');
+  // per-preset: the image actually changes scale
+  h = makeHost({ lat: 10, lon: 10 });
+  await save(h, [preset({ widthM: 1000, autoWidth: true })]);
+  await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 100, h: 100 } });
+  for (let n = 0; n < 3; n++) { h.clock.t += 5 * 60000; h.geo.lat += 0.01; await h.source({ category: 'location', item: 'map', iconPixelSize: { w: 100, h: 100 } }); }
+  ok(h.reqs.some(r => /\/(\d+)\//.test(r.url)) && Number(/\/(\d+)\/\d+\/\d+\.png$/.exec(h.reqs[h.reqs.length - 1].url)[1]) < 14, 'widened map uses a lower tile zoom');
 
   console.log(failures ? `\n${failures} FAILED` : '\nall passed');
   process.exit(failures ? 1 : 0);

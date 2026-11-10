@@ -83,6 +83,9 @@
     <div class="row"><label for="style">Style</label><select id="style"></select></div>
     <div class="row"><label for="widthM">Map width</label><select id="widthM"></select></div>
     <small class="hint" id="zoomHint"></small>
+    <label class="check"><input type="checkbox" id="autoWidth"><span>Automatic width<small>While you keep travelling the map is widened a step at a time so it needs redrawing less often (saves battery); when you slow down it narrows back to the width above.<span id="autoState"></span></small></span></label>
+    <div class="row"><label for="overlay">Routes</label><select id="overlay"></select></div>
+    <small class="hint">Draws marked hiking or cycling routes (Waymarked Trails) over the map. Best on OpenTopoMap or Streets at 20 km or less.</small>
     <div class="row"><label for="tone">Tone</label>
       <select id="tone"><option value="normal">Normal</option><option value="dark">Dark (lightness inverted)</option></select></div>
     <div class="row"><label for="brightness">Brightness <span id="brv">0</span></label>
@@ -157,15 +160,16 @@
   }
 
   // ---- preset form
-  var fields = ['name', 'style', 'widthM', 'tone', 'brightness', 'color', 'dither', 'marker', 'markerColor'];
+  var fields = ['name', 'style', 'widthM', 'overlay', 'tone', 'brightness', 'color', 'dither', 'marker', 'markerColor'];
   function readForm() {
     var p = presets[sel];
     fields.forEach(function (f) { p[f] = $(f).value; });
-    p.widthM = +p.widthM; p.brightness = +p.brightness;
+    p.widthM = +p.widthM; p.brightness = +p.brightness; p.autoWidth = $('autoWidth').checked;
   }
   function writeForm() {
     var p = presets[sel];
     fields.forEach(function (f) { $(f).value = p[f]; });
+    $('autoWidth').checked = !!p.autoWidth;
     $('brv').textContent = p.brightness;
     $('remove').disabled = presets.length < 2;
     updateHint();
@@ -218,6 +222,7 @@
     line('≈ ' + fmtW(i.widthM) + ' across · zoom ' + i.zoom + (i.limited ? ' (style maximum, enlarged)' : ''));
     line(i.fromCache ? 'Reused the drawn map (you have not moved much).' : 'Tiles: ' + i.tiles.total + ' (' + i.tiles.cached + ' cached, ' + i.tiles.fetched + ' downloaded' + (i.tiles.failed ? ', ' + i.tiles.failed + ' failed' : '') + ')');
     line('Centre ' + i.lat.toFixed(4) + ', ' + i.lon.toFixed(4) + ' (' + i.source + ')');
+    if (i.overlay) line('Routes: ' + i.overlay.replace('wmt-', '') + (i.tiles.overlayFailed ? ' (' + i.tiles.overlayFailed + ' overlay tiles failed)' : ''));
     line('Drawn in ' + i.ms + ' ms');
   }
 
@@ -265,6 +270,7 @@
       if (f !== 'name') schedule();
     });
   });
+  $('autoWidth').addEventListener('change', readForm);
   $('remove').onclick = function () { if (presets.length < 2) return; presets.splice(sel, 1); sel = Math.max(0, sel - 1); renderTabs(); writeForm(); schedule(); };
   $('draw').onclick = function () { preview(false); };
   $('fresh').onclick = function () { preview(true); };
@@ -288,6 +294,8 @@
       $('ver').textContent = 'v' + init.version;
       $('style').textContent = ''; styles.forEach(function (s) { var o = document.createElement('option'); o.value = s.id; o.textContent = s.label; $('style').appendChild(o); });
       $('widthM').textContent = ''; widths.forEach(function (w) { var o = document.createElement('option'); o.value = w; o.textContent = fmtW(w); $('widthM').appendChild(o); });
+      $('overlay').textContent = ''; [{ id: 'none', label: 'None' }].concat(init.overlays || []).forEach(function (o) { var e = document.createElement('option'); e.value = o.id; e.textContent = o.label; $('overlay').appendChild(e); });
+      if (init.auto && init.auto.level > 0) $('autoState').textContent = ' Right now the width is widened by ' + init.auto.level + ' step' + (init.auto.level === 1 ? '' : 's') + '.';
       presets = init.settings.presets; sel = 0;
       if (init.settings.fixed) { $('locMode').value = 'fixed'; $('lat').value = init.settings.fixed.lat; $('lon').value = init.settings.fixed.lon; $('fixedRow').hidden = false; $('useRow').hidden = false; }
       renderTabs(); writeForm();

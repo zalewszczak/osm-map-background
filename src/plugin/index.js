@@ -837,7 +837,7 @@ UPNG.encode.alphaMul = function(img, roundA) {
 };
 __defs["main"] = function (module, exports, require) {
 /*
- * OSM Map Background - PebbleOS plugin (source: location/map, one instance per preset).
+ * OSM Map Background - PebbleOS plugin (source: Other/map, one instance per preset).
  * Draws a north-up OpenStreetMap-based map of where you are as a watch-ready image.
  *
  * Bundled with the vendored PNG decoder into src/plugin/index.js by tools/build-plugin.js.
@@ -1010,7 +1010,7 @@ function packBitmap(idx, w, h, paletteBytes) {
 // ---------------------------------------------------------------- constants
 
 var VERSION = '1.0.0';
-var SOURCE_KEY = 'location/map';
+var SOURCE_KEY = 'Other/map';
 
 var SETTINGS_KEY = 'osmmap.settings.v1';
 var ERROR_KEY = 'osmmap.lasterror.v1';
@@ -1025,7 +1025,7 @@ var BMP_PREFIX = 'osmmap.bmp.v1:';
 // needed for the map being drawn are requested.
 var USER_AGENT = 'PebbleOS-OSM-Map-Background/1.0 (personal Pebble plugin)';
 var TILE_TTL_MS = 7 * 24 * 3600 * 1000;
-var MAX_CACHED_TILES = 48;
+var MAX_CACHED_TILES = 64;
 var MAX_CACHED_BITMAPS = 8;
 var BITMAP_TTL_MS = 60 * 60 * 1000;
 var REUSE_FRACTION = 0.02;          // reuse a drawn map until you moved 2% of its width
@@ -1035,7 +1035,16 @@ var TILE_SIZE = 256;
 var MAX_PRESETS = 4;
 var NEUTRAL = [242, 239, 233];      // shown where a tile is missing
 
-var WIDTHS = [150, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 20000];
+var WIDTHS = [150, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 20000, 30000, 50000, 100000, 200000, 500000, 1000000];
+
+// Automatic width: while you keep moving the map is widened one step per update so it needs
+// redrawing less often; once you slow down it narrows again, back to the preset's own width.
+var AUTO_KEY = 'osmmap.auto.v1';
+var AUTO_MIN_GAP_MS = 20 * 1000;      // requests closer together than this (several watchfaces) count once
+var AUTO_FAST_MS = 15 * 60 * 1000;    // updates this close together are "frequent"
+var AUTO_RESET_MS = 30 * 60 * 1000;   // no update for this long: back to the preset width
+var AUTO_WIDEN_AT = 0.12;             // moved >= 12% of the map width since the last update: widen
+var AUTO_NARROW_AT = 0.04;            // moved < 4%: narrow one step
 
 // One host per style: the Internet permission is per exact host name.
 var STYLES = {
@@ -1059,6 +1068,22 @@ var STYLES = {
   }
 };
 
+// Transparent route overlays from Waymarked Trails, drawn on top of the chosen style.
+var OVERLAYS = {
+  hiking: {
+    id: 'wmt-hiking', label: 'Hiking routes (Waymarked Trails)', maxZoom: 18,
+    url: 'https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png',
+    host: 'tile.waymarkedtrails.org',
+    attribution: 'Hiking routes © waymarkedtrails.org (CC-BY-SA), data © OpenStreetMap contributors'
+  },
+  cycling: {
+    id: 'wmt-cycling', label: 'Cycling routes (Waymarked Trails)', maxZoom: 18,
+    url: 'https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png',
+    host: 'tile.waymarkedtrails.org',
+    attribution: 'Cycling routes © waymarkedtrails.org (CC-BY-SA), data © OpenStreetMap contributors'
+  }
+};
+
 var MARKER_COLORS = {
   red: gcolor(3, 0, 0), orange: gcolor(3, 1, 0), blue: gcolor(0, 0, 3),
   green: gcolor(0, 3, 0), magenta: gcolor(3, 0, 3), black: gcolor(0, 0, 0)
@@ -1068,7 +1093,7 @@ var MARKER_SIZES = { small: 0.022, medium: 0.032, large: 0.045 };
 var DITHER = { off: 0, light: 0.35, full: 1 };
 
 var DEFAULT_PRESET = {
-  id: 'p1', name: 'Streets', style: 'osm', widthM: 1000, tone: 'normal', brightness: 0,
+  id: 'p1', name: 'Streets', style: 'osm', widthM: 1000, autoWidth: true, overlay: 'none', tone: 'normal', brightness: 0,
   color: 'color', dither: 'light', marker: 'medium', markerColor: 'red'
 };
 
@@ -1121,6 +1146,8 @@ function sanitizePreset(p, index, used) {
     name: name,
     style: style,
     widthM: isFinite(width) && width > 0 ? nearestWidth(width) : DEFAULT_PRESET.widthM,
+    autoWidth: p.autoWidth === undefined ? true : !!p.autoWidth,
+    overlay: OVERLAYS[p.overlay] ? p.overlay : 'none',
     tone: p.tone === 'dark' ? 'dark' : 'normal',
     brightness: clampInt(p.brightness, -70, 70, 0),
     color: p.color === 'gray' ? 'gray' : 'color',
@@ -1193,6 +1220,35 @@ function mercator(lat, lon, z) {
   lat = Math.max(-85.0511, Math.min(85.0511, lat));
   var n = Math.pow(2, z) * TILE_SIZE, s = Math.sin(lat * Math.PI / 180);
   return { x: (lon + 180) / 360 * n, y: (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n };
+}
+
+function effectiveWidth(base, level) {
+  var i = WIDTHS.indexOf(nearestWidth(base));
+  return WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, i + level))];
+}
+
+/** Moves the shared "widen" level up or down from how far you went since the previous update. */
+function updateAutoLevel(settings, pos, log) {
+  var autos = settings.presets.filter(function (p) { return p.autoWidth; });
+  if (!autos.length || pos.stale) return (storeGet(AUTO_KEY) || {}).level || 0;
+  var st = storeGet(AUTO_KEY), now = Date.now();
+  if (!st || typeof st.lat !== 'number') {
+    storeSet(AUTO_KEY, { lat: pos.lat, lon: pos.lon, t: now, level: 0 });
+    return 0;
+  }
+  var dt = now - st.t;
+  if (dt < AUTO_MIN_GAP_MS) return st.level || 0;
+  var level = st.level || 0, moved = distanceM(pos.lat, pos.lon, st.lat, st.lon);
+  var ref = Infinity;
+  autos.forEach(function (p) { ref = Math.min(ref, effectiveWidth(p.widthM, level)); });
+  var frac = moved / ref, before = level;
+  if (dt > AUTO_RESET_MS) level = 0;
+  else if (frac >= AUTO_WIDEN_AT && dt <= AUTO_FAST_MS) level++;
+  else if (frac < AUTO_NARROW_AT) level--;
+  level = Math.max(0, Math.min(WIDTHS.length - 1, level));
+  log('auto width: moved ' + Math.round(moved) + ' m in ' + Math.round(dt / 1000) + ' s (' + Math.round(frac * 100) + '% of ' + formatWidth(ref) + ') -> level ' + before + ' -> ' + level);
+  storeSet(AUTO_KEY, { lat: pos.lat, lon: pos.lon, t: now, level: level });
+  return level;
 }
 
 /** Which tile zoom to use so the image is widthM metres across; k = tile pixels per output pixel. */
@@ -1347,7 +1403,7 @@ function drawMarker(idx, w, h, radius, fill, white, black) {
 // ---------------------------------------------------------------- bitmap cache
 
 function bitmapKey(p, w, h) {
-  return BMP_PREFIX + [p.style, p.widthM, p.tone, p.brightness, p.color, p.dither, p.marker, p.markerColor, w, h].join('|');
+  return BMP_PREFIX + [p.style, p.overlay, p.widthM, p.tone, p.brightness, p.color, p.dither, p.marker, p.markerColor, w, h].join('|');
 }
 
 function cacheBitmap(key, rec) {
@@ -1382,7 +1438,8 @@ async function renderMap(preset, pos, w, h, ctx) {
     }
   }
 
-  var pl = plan(pos.lat, preset.widthM, w, style);
+  var overlay = OVERLAYS[preset.overlay] || null;
+  var pl = plan(pos.lat, preset.widthM, w, overlay ? { maxZoom: Math.min(style.maxZoom, overlay.maxZoom) } : style);
   var c = mercator(pos.lat, pos.lon, pl.z);
   var rw = w * pl.k, rh = h * pl.k, left = c.x - rw / 2, top = c.y - rh / 2;
   var n = Math.pow(2, pl.z);
@@ -1393,7 +1450,7 @@ async function renderMap(preset, pos, w, h, ctx) {
     if (ty < 0 || ty >= n) continue;
     for (var tx = tx0; tx <= tx1; tx++) tiles.push({ x: tx, y: ty });
   }
-  var stats = { total: tiles.length, cached: 0, fetched: 0, failed: 0 };
+  var stats = { total: tiles.length, cached: 0, fetched: 0, failed: 0, overlayFailed: 0 };
   log('zoom ' + pl.z + (pl.limited ? ' (style maximum)' : '') + ', ' + style.id + ', ' + tiles.length + ' tile' + (tiles.length === 1 ? '' : 's') + ', window ' + Math.round(rw) + 'x' + Math.round(rh) + ' tile px');
   var lastError = null;
   await mapLimit(tiles, TILE_CONCURRENCY, async function (t) {
@@ -1404,6 +1461,15 @@ async function renderMap(preset, pos, w, h, ctx) {
     var fail = new Error('no map tile could be loaded: ' + errText(lastError));
     fail.name = lastError && lastError.name === 'NotAllowedError' ? 'NotAllowedError' : 'Error';
     throw fail;
+  }
+  if (overlay) {
+    await mapLimit(tiles, TILE_CONCURRENCY, async function (t) {
+      try { t.over = await loadTile(overlay, pl.z, t.x, t.y, ctx.memo, { cached: 0, fetched: 0 }); }
+      catch (e) {
+        if (/HTTP 404/.test(errText(e))) return;          // no routes in this tile
+        stats.overlayFailed++; log('overlay tile ' + pl.z + '/' + t.x + '/' + t.y + ' failed: ' + errText(e));
+      }
+    });
   }
   log('tiles: ' + stats.cached + ' cached, ' + stats.fetched + ' downloaded, ' + stats.failed + ' failed');
 
@@ -1416,6 +1482,18 @@ async function renderMap(preset, pos, w, h, ctx) {
     for (var row = 0; row < TILE_SIZE; row++) {
       var s = row * TILE_SIZE * 4;
       mosaic.set(t.data.subarray(s, s + TILE_SIZE * 4), ((oy + row) * mw + ox) * 4);
+    }
+    if (t.over) {
+      for (var row2 = 0; row2 < TILE_SIZE; row2++) {
+        for (var col = 0; col < TILE_SIZE; col++) {
+          var so = (row2 * TILE_SIZE + col) * 4, a = t.over[so + 3];
+          if (!a) continue;
+          var d = ((oy + row2) * mw + ox + col) * 4, ia = 255 - a;
+          mosaic[d] = (t.over[so] * a + mosaic[d] * ia) / 255;
+          mosaic[d + 1] = (t.over[so + 1] * a + mosaic[d + 1] * ia) / 255;
+          mosaic[d + 2] = (t.over[so + 2] * a + mosaic[d + 2] * ia) / 255;
+        }
+      }
     }
   });
 
@@ -1438,30 +1516,35 @@ async function renderMap(preset, pos, w, h, ctx) {
   }
   var bitmap = packBitmap(idx, w, h, palette);
   var info = {
-    style: style.id, zoom: pl.z, limited: pl.limited, widthM: Math.round(pl.actualWidthM), tiles: stats,
+    style: style.id, overlay: overlay ? overlay.id : null, zoom: pl.z, limited: pl.limited, widthM: Math.round(pl.actualWidthM), tiles: stats,
     lat: pos.lat, lon: pos.lon, source: pos.source, ms: Date.now() - started, fromCache: false
   };
   log('drawn ' + w + 'x' + h + ', ' + palette.length + ' colours in ' + (Date.now() - started) + ' ms');
-  if (!stats.failed) cacheBitmap(key, { t: Date.now(), lat: pos.lat, lon: pos.lon, bitmap: bitmap, info: info });
+  if (!stats.failed && !stats.overlayFailed) cacheBitmap(key, { t: Date.now(), lat: pos.lat, lon: pos.lon, bitmap: bitmap, info: info });
   return { bitmap: bitmap, info: info };
 }
 
 // ---------------------------------------------------------------- source handler
 
+function attributionOf(preset) {
+  var style = STYLES[preset.style], o = OVERLAYS[preset.overlay];
+  return o ? style.attribution + '; ' + o.attribution : style.attribution;
+}
+
 function propertiesFor(preset, pos, wants) {
   var style = STYLES[preset.style], p = {};
   if (wants('name')) p.name = { shortText: { text: preset.name }, longText: { text: preset.name + ' (' + style.label + ', ' + formatWidth(preset.widthM) + ')' } };
   if (wants('style')) p.style = { shortText: { text: style.short }, longText: { text: style.label } };
-  if (wants('width_m')) p.width_m = { numericValue: { value: preset.widthM }, shortText: { text: formatWidth(preset.widthM) }, longText: { text: 'about ' + formatWidth(preset.widthM) + ' across' } };
+  if (wants('width_m')) p.width_m = { numericValue: { value: preset.widthM }, shortText: { text: formatWidth(preset.widthM) }, longText: { text: 'about ' + formatWidth(preset.widthM) + ' across' + (preset.baseWidthM && preset.baseWidthM !== preset.widthM ? ' (auto-widened from ' + formatWidth(preset.baseWidthM) + ')' : '') } };
   if (wants('latitude')) p.latitude = { numericValue: { value: pos.lat } };
   if (wants('longitude')) p.longitude = { numericValue: { value: pos.lon } };
-  if (wants('attribution')) p.attribution = { longText: { text: style.attribution } };
+  if (wants('attribution')) p.attribution = { longText: { text: attributionOf(preset) } };
   if (wants('updated')) p.updated = { timestamp: { value: Math.floor(Date.now() / 1000) } };
   return p;
 }
 
 Pebble.registerSourceHandler(async function (request, respond) {
-  if (request.category !== 'location' || request.item !== 'map') {
+  if (request.category !== 'Other' || request.item !== 'map') {
     respond.error('PLUGIN_UNAVAILABLE', 'this plugin only serves ' + SOURCE_KEY);
     return;
   }
@@ -1475,8 +1558,11 @@ Pebble.registerSourceHandler(async function (request, respond) {
   }
   var wants = function (name) { return !request.properties || request.properties.indexOf(name) >= 0; };
   var size = request.iconPixelSize, ctx = { log: log, memo: {}, force: false }, instances = [], lastErr = null;
+  var level = updateAutoLevel(settings, pos, log);
   for (var i = 0; i < settings.presets.length; i++) {
-    var preset = settings.presets[i], props = propertiesFor(preset, pos, wants);
+    var preset = settings.presets[i];
+    if (preset.autoWidth && level > 0) preset = Object.assign({}, preset, { widthM: effectiveWidth(preset.widthM, level), baseWidthM: preset.widthM });
+    var props = propertiesFor(preset, pos, wants);
     if (wants('image') && size) {
       if (Date.now() - started > REQUEST_BUDGET_MS) {
         log('out of time budget, skipping image for "' + preset.name + '"');
@@ -1495,18 +1581,19 @@ Pebble.registerSourceHandler(async function (request, respond) {
 
 // ---------------------------------------------------------------- config page conversation
 
-async function missingPermissions(styleIds, needLocation) {
+async function missingPermissions(styleIds, needLocation, overlayIds) {
   var perms = Pebble.permissions;
   if (!perms || typeof perms.query !== 'function') return null;
   var checks = [];
   if (needLocation) checks.push(['Location', 'Location']);
   styleIds.forEach(function (id) { checks.push(['Internet/' + STYLES[id].host, STYLES[id].host]); });
+  (overlayIds || []).forEach(function (id) { if (OVERLAYS[id]) checks.push(['Internet/' + OVERLAYS[id].host, OVERLAYS[id].host]); });
   var missing = [];
   for (var i = 0; i < checks.length; i++) {
     try {
       var state = await perms.query(checks[i][0]);
       var value = state && typeof state === 'object' ? (state.state || state.status) : state;
-      if (value && value !== 'granted') missing.push(checks[i][1]);
+      if (value && value !== 'granted' && missing.indexOf(checks[i][1]) < 0) missing.push(checks[i][1]);
     } catch (e) { /* unknown: don't nag */ }
   }
   return missing;
@@ -1527,7 +1614,9 @@ Pebble.registerConfigHandler(async function (message, respond) {
         version: VERSION, settings: settings, styles: styleList(), widths: WIDTHS, maxPresets: MAX_PRESETS,
         defaultPreset: sanitizePreset(DEFAULT_PRESET, 0, {}),
         lastError: storeGet(ERROR_KEY),
-        missingPermissions: await missingPermissions(settings.presets.map(function (p) { return p.style; }), !settings.fixed)
+        missingPermissions: await missingPermissions(settings.presets.map(function (p) { return p.style; }), !settings.fixed, settings.presets.map(function (p) { return p.overlay; })),
+        auto: storeGet(AUTO_KEY) || null,
+        overlays: Object.keys(OVERLAYS).map(function (id) { return { id: id, label: OVERLAYS[id].label }; })
       });
     } else if (type === 'save') {
       var s = sanitizeSettings(message.settings);
@@ -1536,6 +1625,7 @@ Pebble.registerConfigHandler(async function (message, respond) {
       respond({ ok: true, settings: s });
     } else if (type === 'clearCache') {
       clearCaches();
+      storeRemove(AUTO_KEY);
       storeRemove(ERROR_KEY);
       respond({ ok: true });
     } else if (type === 'preview') {
@@ -1548,13 +1638,13 @@ Pebble.registerConfigHandler(async function (message, respond) {
         res.position = pos;
         var r = await renderMap(preset, pos, w, h, { log: log, memo: {}, force: !!message.fresh });
         res.image = r.bitmap; res.info = r.info;
-        res.attribution = STYLES[preset.style].attribution;
+        res.attribution = attributionOf(preset);
         storeRemove(ERROR_KEY);
       } catch (e) {
         res.error = errText(e);
         res.errorCode = e && e.code;
       }
-      res.missingPermissions = await missingPermissions([preset.style], !fixed);
+      res.missingPermissions = await missingPermissions([preset.style], !fixed, [preset.overlay]);
       res.log = log.lines;
       respond(res);
     } else {

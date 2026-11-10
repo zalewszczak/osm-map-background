@@ -28,7 +28,8 @@
           "domains": [
             "tile.openstreetmap.org",
             "tile.opentopomap.org",
-            "a.tile-cyclosm.openstreetmap.fr"
+            "a.tile-cyclosm.openstreetmap.fr",
+            "tile.waymarkedtrails.org"
           ]
         }
       }
@@ -38,7 +39,7 @@
       "script": "src/plugin/index.js",
       "sources": [
         {
-          "category": "location",
+          "category": "Other",
           "items": [
             "map"
           ],

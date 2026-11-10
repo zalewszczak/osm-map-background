@@ -13,10 +13,29 @@ Source `location/map`, one instance per preset (up to 4).
 3. Open the plugin's settings page, press *Draw map* to preview, then *Save*.
 
 ## Settings (per preset)
-Name, style (OSM Standard, OpenTopoMap, CyclOSM), map width (150 m - 20 km, ground width of
+Name, style (OSM Standard, OpenTopoMap, CyclOSM), map width (150 m - 1000 km, ground width of
 the image), tone (normal/dark/light), brightness, colour or greyscale, dithering
-(off/light/full), location marker (size and colour), plus a fixed lat/lon option for testing.
+(off/light/full), route overlay, automatic width, location marker (size and colour), plus a fixed lat/lon option for testing.
 Preview size can emulate Pebble Time 2, Gabbro, and others. The preview redraws live.
+
+## Route overlays (hiking / cycling)
+Optional transparent overlay from Waymarked Trails (`tile.waymarkedtrails.org`) drawn over the chosen
+style: marked hiking routes or cycling routes. Looks best over OpenTopoMap or Streets at 20 km or less.
+Needs the `tile.waymarkedtrails.org` Internet permission. Tiles without routes are fine; if the
+overlay server fails the map is still shown (just not cached, so it retries next time).
+OpenStreetMap.org's own "hiking" style layers (Thunderforest etc.) need API keys, so they are not used.
+
+## Automatic width (on by default)
+While you keep moving and the plugin is asked for updates often, the map is widened one step per
+update (see the width ladder: 150 m ... 1000 km) so it needs redrawing less often, which saves battery.
+- Widen: you moved at least 12% of the current map width since the previous update, and that update was
+  at most 15 minutes ago.
+- Narrow: you moved less than 4% of the width; one step back per update, down to the preset's width.
+- No update for 30 minutes: straight back to the preset width. Requests within 20 s of each other
+  (several watchfaces) count as one.
+- The level is shared by presets that have it on; the most sensitive (narrowest) one decides.
+Watchfaces see the width actually drawn in `width_m` (long text mentions the auto-widening). Turn it
+off per preset in the settings. The preview always draws the width you chose.
 
 ## For watchface authors
 Request category `location`, item `map`; pick a preset via `instanceId`. The image is at
